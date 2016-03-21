@@ -27,15 +27,11 @@ class AdminController extends LSYii_Controller
     {
         parent::_init();
         App()->getComponent('bootstrap');
-        $sUpdateLastCheck = getGlobalSetting('updatelastcheck');
-
         $this->_sessioncontrol();
+        define('ADMIN_SCRIPT_PATH', realpath ( Yii::app()->basePath .'/../scripts/admin/') . '/');
+        define('SCRIPT_PATH', realpath ( Yii::app()->basePath .'/../scripts/') . '/');
+        App()->getClientScript()->registerScriptFile( App()->getAssetManager()->publish( ADMIN_SCRIPT_PATH.'/admin_core.js' ));
 
-        if (Yii::app()->getConfig('buildnumber') != "" && Yii::app()->getConfig('updatecheckperiod') > 0 && $sUpdateLastCheck < dateShift(date("Y-m-d H:i:s"), "Y-m-d H:i:s", "-". Yii::app()->getConfig('updatecheckperiod')." days"))
-            updateCheck();
-
-        //unset(Yii::app()->session['FileManagerContext']);
-        App()->getClientScript()->registerScriptFile(Yii::app()->getConfig('adminscripts') . "admin_core.js");
         $this->user_id = Yii::app()->user->getId();
         if (!Yii::app()->getConfig("surveyid")) {Yii::app()->setConfig("surveyid", returnGlobal('sid'));}         //SurveyID
         if (!Yii::app()->getConfig("ugid")) {Yii::app()->setConfig("ugid", returnGlobal('ugid'));}                //Usergroup-ID
@@ -46,6 +42,9 @@ class AdminController extends LSYii_Controller
         if (!Yii::app()->getConfig("action")) {Yii::app()->setConfig("action", returnGlobal('action'));}          //Desired action
         if (!Yii::app()->getConfig("subaction")) {Yii::app()->setConfig("subaction", returnGlobal('subaction'));} //Desired subaction
         if (!Yii::app()->getConfig("editedaction")) {Yii::app()->setConfig("editedaction", returnGlobal('editedaction'));} // for html editor integration
+
+        // Variable not used, but keep it here so the object is initialized at the right place.
+        $oTemplate = Template::model()->getInstance(Yii::app()->getConfig("defaulttemplate"));
     }
 
     /**
@@ -53,11 +52,11 @@ class AdminController extends LSYii_Controller
     *
     * @access public
     * @param string $message The error message
-    * @param string|array $url URL. Either a string. Or array with keys url and title
     * @return void
     */
     public function error($message, $sURL = array())
     {
+        define('IMAGE_BASE_URL', Yii::app()->getConfig('adminimagebaseurl'));
 
         $this->_getAdminHeader();
         $sOutput = "<div class='messagebox ui-corner-all'>\n";
@@ -132,15 +131,16 @@ class AdminController extends LSYii_Controller
     */
     public function run($action)
     {
+
         // Check if the DB is up to date
         if (Yii::app()->db->schema->getTable('{{surveys}}'))
         {
             $sDBVersion = getGlobalSetting('DBVersion');
-            if ((int) $sDBVersion < Yii::app()->getConfig('dbversionnumber') && $action != 'update' && $action != 'authentication')
-                $this->redirect(array('/admin/update/sa/db'));
+            if ((int) $sDBVersion < Yii::app()->getConfig('dbversionnumber') && $action != 'databaseupdate' && $action != 'authentication')
+                $this->redirect(array('/admin/databaseupdate/sa/db'));
         }
 
-        if ($action != "update" && $action != "db")
+        if ($action != "databaseupdate" && $action != "db")
             if (empty($this->user_id) && $action != "authentication"  && $action != "remotecontrol")
             {
                 if (!empty($action) && $action != 'index')
@@ -190,6 +190,7 @@ class AdminController extends LSYii_Controller
         'checkintegrity'   => 'checkintegrity',
         'conditions'       => 'conditionsaction',
         'database'         => 'database',
+        'databaseupdate'   => 'databaseupdate',
         'dataentry'        => 'dataentry',
         'dumpdb'           => 'dumpdb',
         'emailtemplates'   => 'emailtemplates',
@@ -198,10 +199,12 @@ class AdminController extends LSYii_Controller
         'validate'         => 'ExpressionValidate',
         'globalsettings'   => 'globalsettings',
         'htmleditor_pop'   => 'htmleditor_pop',
+        'homepagesettings'   => 'homepagesettings',
         'limereplacementfields' => 'limereplacementfields',
         'index'            => 'index',
         'labels'           => 'labels',
         'participants'     => 'participantsaction',
+        'pluginmanager'    => 'pluginmanager',
         'printablesurvey'  => 'printablesurvey',
         'questiongroups'    => 'questiongroups',
         'questions'         => 'questions',
@@ -288,16 +291,48 @@ class AdminController extends LSYii_Controller
         if ($aData['adminlang'] != 'en')
             Yii::app()->getClientScript()->registerScriptFile(App()->baseUrl . "/third_party/jqueryui/development-bundle/ui/i18n/jquery.ui.datepicker-" . $aData['adminlang'] .".js");
 
-
         $aData['sitename'] = Yii::app()->getConfig("sitename");
-        $aData['admintheme'] = Yii::app()->getConfig("admintheme");
         $aData['firebug'] = useFirebug();
 
         if (!empty(Yii::app()->session['dateformat']))
             $aData['formatdata'] = getDateFormatData(Yii::app()->session['dateformat']);
 
+        // Register admin theme package with asset manager
+        $oAdmintheme = new AdminTheme; // We get the package datas from the model
+        $oAdmintheme->setAdminTheme();
+        $aData['sAdmintheme'] = $oAdmintheme->name;
+        $aData['aPackageScripts']=$aData['aPackageStyles']=array();
+        // Typecasting as array directly does not work in PHP 5.3.17 so we loop over the XML entries
+        foreach($oAdmintheme->config->files->js->filename as $aFile)
+        {
+            $aData['aPackageScripts'][]=(string)$aFile;
+        }
+        foreach($oAdmintheme->config->files->css->filename as $aFile)
+        {
+            $aData['aPackageStyles'][]=(string)$aFile;
+        }
+        if ($aData['bIsRTL'])
+        {
+            foreach ($aData['aPackageStyles'] as &$filename)
+            {
+                $filename = str_replace('.css', '-rtl.css', $filename);
+            }
+        }
+
         $sOutput = $this->renderPartial("/admin/super/header", $aData, true);
 
+        // Define images url
+        define('LOGO_URL', App()->getAssetManager()->publish( dirname(Yii::app()->request->scriptFile).'/styles/'.$oAdmintheme->name.'/images/logo.png'));
+
+        // Define presentation text on welcome page
+        if($oAdmintheme->config->metadatas->presentation)
+        {
+            define('PRESENTATION', $oAdmintheme->config->metadatas->presentation);
+        }
+        else
+        {
+            define('PRESENTATION', gT('This is the LimeSurvey admin interface. Start to build your survey from here.'));
+        }
 
         if ($return)
         {
@@ -355,7 +390,7 @@ class AdminController extends LSYii_Controller
     * @param string $class
     * @return void
     */
-    public function _showMessageBox($title,$message,$class="header ui-widget-header")
+    public function _showMessageBox($title,$message,$class="message-box-error")
     {
         $aData['title'] = $title;
         $aData['message'] = $message;
@@ -363,34 +398,6 @@ class AdminController extends LSYii_Controller
         $this->renderPartial('/admin/super/messagebox', $aData);
     }
 
-    /**
-    * _showadminmenu() function returns html text for the administration button bar
-    *
-    * @access public
-    * @global string $homedir
-    * @global string $scriptname
-    * @global string $surveyid
-    * @global string $setfont
-    * @global string $imageurl
-    * @param int $surveyid
-    * @return string $adminmenu
-    */
-    public function _showadminmenu($surveyid = false)
-    {
-        if (Yii::app()->session['pw_notify'] && Yii::app()->getConfig("debug")<2)  {
-            Yii::app()->session['flashmessage'] = gT("Warning: You are still using the default password ('password'). Please change your password and re-login again.");
-        }
-
-        $updateModel = new UpdateForm();
-        $updateNotification = $updateModel->updateNotification;
-        $aData['showupdate'] = $updateNotification->result;
-
-        $aData['surveyid'] = $surveyid;
-        $aData['iconsize'] = Yii::app()->getConfig('adminthemeiconsize');
-        $aData['sImageURL'] = Yii::app()->getConfig('adminimageurl');
-        $this->renderPartial("/admin/super/adminmenu", $aData);
-
-    }
 
     public function _loadEndScripts()
     {
